@@ -1,28 +1,40 @@
 import datetime
+import asyncio
+import asyncpg
+import os
+import shutil
 
 from sqlalchemy import create_engine, MetaData, Table, Integer, String, \
     Column, BigInteger, Float, Boolean, ForeignKey, DateTime, Date, insert, select, func, distinct, \
     update, and_, or_, not_, between, delete
-import psycopg2
-from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
+from sqlalchemy.ext.asyncio import create_async_engine
 
+'''
+CONSTANTS
+'''
+MEET = [0, 7, 14, 15]
+GYM = [0, 7, 14]
+WASH = [0, 7, 14, 15]
+USERS = [0, 1, 2, 3, 4, 5, 6]
+LINK = [0, 1]
+PASSCODE = [0, 1]
 
 class Database:
     def  __init__(self):
         self.metadata = MetaData()
 
-    def if_not_exist(self, PASSWORD, NAME_BASE):
-        connection = psycopg2.connect(user="postgres", password=PASSWORD)
-        connection.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+    async def if_not_exist(self, PASSWORD, NAME_BASE):
+        connection = asyncpg.connect(user="postgres", password=PASSWORD)
+        #connection.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
         cursor = connection.cursor()
         sql_create_database = cursor.execute('create database ' + NAME_BASE)
         cursor.close()
         connection.close()
 
-    def create_eng(self, PASSWORD, NAME_BASE):
-        self.engine = create_engine("postgresql+psycopg2://postgres:" + PASSWORD + "@localhost/" + NAME_BASE)
+    async def create_eng(self, PASSWORD, NAME_BASE):
+        self.engine = create_async_engine("postgresql+asyncpg://postgres:" + PASSWORD + "@localhost/" + NAME_BASE, execution_options={"isolation_level": "AUTOCOMMIT"})
 
-    def create_tables(self):
+    async def create_tables(self):
         self.users = Table('users', self.metadata,#improve time
                       Column('id', Integer, primary_key=True),
                       Column('username', String(32), nullable=False),
@@ -81,293 +93,250 @@ class Database:
                                   Column('day', Date)
                                   )
 
-        self.metadata.create_all(self.engine)
-
-    def add_user(self, user, id, code='0007573', money=0, name=None, mail=None):
-        ins = insert(self.users)
-        conn = self.engine.connect()
-
-        r = conn.execute(ins,
-            username = user,
-            tg_id = id,
-            balance = money,
-            passcode = code,
-            fullname = name,
-            email = mail,
-            is_registered = False)
-
-    def get_user_by_id(self, tg_id):
-        conn = self.engine.connect()
-
-        s = select([self.users]).where(self.users.c.tg_id == tg_id)
-        r = conn.execute(s)
-        #print(r.fetchall()) - for tests
-        return r.fetchall()
-
-    def get_user_by_username(self, username):
-        conn = self.engine.connect()
-
-        s = select([self.users]).where(self.users.c.username == username)
-        r = conn.execute(s)
-        #print(r.fetchall()) - for tests
-        return r.fetchall()
-
-    def users_count(self):
-        conn = self.engine.connect()
-
-        r = func.count(distinct(self.users.c.tg_id))
-        s = select(r)
-        rs = conn.execute(s)
-        #print(rs.fetchone()) - for tests
-        return rs.fetchone()
-
-    def get_user_with_balance(self):
-        conn = self.engine.connect()
-
-        s = select(self.users).where(self.users.c.balance > 0)
-        r = conn.execute(s)
-        #print(r.fetchall()) - for tests
-        return r.fetchall()
-
-    def change_balance(self, tg_id, diff):
-        conn = self.engine.connect()
-
-        s = update(self.users).where(and_(self.users.c.balance + diff > 0,
-                                          self.users.c.tg_id == tg_id)).values(balance = self.users.c.balance + diff)
-        rs = conn.execute(s)
-
-    def change_passcode(self, tg_id, new_passcode):
-        conn = self.engine.connect()
-
-        s = update(self.users).where(self.users.c.tg_id == tg_id).values(passcode = new_passcode)
-        rs = conn.execute(s)
+        async with self.engine.begin() as conn:
+            #await conn.run_sync(self.metadata.drop_all)
+            await conn.run_sync(self.metadata.create_all)
+
+    async def connection(self, sql_command):
+        async with self.engine.connect() as conn:
+            res = await conn.execute(sql_command)
+            return res
+
+    async def add_user(self, user, id, money=0, code='0007573', name=None, mail=None):
+        await self.connection(insert(self.users).values
+                        (username = user,
+                         tg_id = id,
+                         balance = money,
+                         passcode = code,
+                         fullname = name,
+                         email = mail,
+                         is_registered = False))
+
+    async def get_user_by_id(self, tg_id):
+        res = await self.connection(select([self.users]).where(self.users.c.tg_id == tg_id))
+        return res.fetchall()
+
+    async def get_user_by_username(self, username):
+        res = await self.connection(select([self.users]).where(self.users.c.username == username))
+        return res.fetchall()
+
+    async def users_count(self):
+        res = await self.connection(select(func.count(distinct(self.users.c.tg_id))))
+        return res.fetchone()[0]
+
+    async def get_user_with_balance(self):
+        res = await self.connection(select(self.users).where(self.users.c.balance > 0))
+        return res.fetchall()
+
+    async def change_balance(self, tg_id, diff):
+        await self.connection(update(self.users).where(and_(self.users.c.balance + diff > 0,
+                                          self.users.c.tg_id == tg_id)).values(balance = self.users.c.balance + diff))
+
+    async def change_passcode(self, tg_id, new_passcode):
+        await self.connection(update(self.users).where(self.users.c.tg_id == tg_id).values(passcode = new_passcode))
+
+    async def change_fullname(self, tg_id, new_fullname):
+        await self.connection(update(self.users).where(self.users.c.tg_id == tg_id).values(fullname = new_fullname))
+
+    async def register_user(self, tg_id):
+        await self.connection(update(self.users).where(self.users.c.tg_id == tg_id).values(is_registered = True))
+
+    async def add_record(self, name_table, begin, end, user_tg_id, washer=0):
+        if (washer == 0):
+            if (name_table == self.wash_records):
+                raise Exception("Wrong table, you didn't specify the washer")
+            await self.connection(insert(name_table).values(begin = begin,
+                                                      finish = end,
+                                                      user_tg_id = user_tg_id))
+        else:
+            if (name_table != self.wash_records):
+                raise Exception("Wrong table, what the fuck is washer in gym or meet??")
+            await self.connection(insert(name_table).values(begin = begin,
+                                                      finish = end,
+                                                      washer = washer,
+                                                      user_tg_id = user_tg_id))
+
+    async def approve_meet_record(self, record_id):
+        await self.connection(update(self.meet_records).where(self.meet_records.c.id == record_id).values(is_approved = True))
+
+    async def count_records(self, name_table, beg, end):
+        res = await self.connection(select(func.count(distinct(name_table.c.id))).where(and_(name_table.c.begin >= beg,
+                                                                   name_table.c.finish <= end)))
+        return res.scalar()
+
+    async def delete_inactive(self):
+        await self.connection(delete(self.users).where(self.users.c.is_registered == False))
+
+    async def delete_by_time(self, name_table, date, delta):#delta MUST be timedelta(if u bydlo and don't understand)
+        await self.connection(delete(name_table).where((date - name_table.c.begin) >= delta))
+
+    async def get_records(self, name_table, day, delta):#delta MUST be timedelta(if u bydlo and don't understand)
+        res = await self.connection(select([name_table]).where(and_(name_table.c.begin >= day,
+                                                   name_table.c.finish <= day + delta)))
+        return res.fetchall()
+
+    async def get_user_records(self, name_table, tg_id, start, delta):#delta MUST be timedelta(if u bydlo and don't understand)
+        res = await self.connection(select([name_table]).where(and_(name_table.c.begin >= start,
+                                                   name_table.c.finish <= start + delta,
+                                                   name_table.c.user_tg_id == tg_id)))
+        return res.fetchall()
+
+    async def get_record_id(self, name_table, record_id):
+        res = await self.connection(select([name_table]).where(name_table.c.id == record_id))
+        return res.fetchall()
+
+    async def delete_record(self, name_table, record_id):
+        await self.connection(delete(name_table).where(name_table.c.id == record_id))
+
+    async def update_link(self, name_table, links, days):
+        await self.connection(insert(name_table).values(link = links, day = days))
+
+    async def get_link(self, name_table, days):
+        res = await self.connection(select([name_table]).where(name_table.c.day == days))
+        return res.fetchall()
+
+    async def delete_link(self, name_table, days):
+        await self.connection(delete(name_table).where(name_table.c.day == days))
+
+    async def update_passcode(self, code, days):
+        await self.connection(insert(self.working_passcodes).values(passcode = code, day = days))
+
+    async def get_passcode(self, days):
+        res = await self.connection(select(self.working_passcodes).where(self.working_passcodes.c.day == days))
+        return res.fetchall()
+
+    async def delete_passcode(self, days):
+        await self.connection(delete(self.working_passcodes).where(self.working_passcodes.c.day <= days))
+
+    async def backup_table(self, name_table):
+        dest = "backup_" + str(datetime.datetime.now())[:10]
+        name = str(name_table) + "_backup_" + str(datetime.datetime.now())[:10] + ".txt"
+        if os.path.exists(dest):
+            pass
+        else:
+            os.mkdir(dest)
+        file = open(name, "w")
+        data = await self.connection(select(name_table))
+
+        for i in data.fetchall():
+            file.write(str(i) + '\n')
+        file.close()
+        shutil.move(name, dest)
+
+
+    async def backup_all(self):
+        await self.backup_table(self.users)
+        await self.backup_table(self.wash_records)
+        await self.backup_table(self.wash_photo_links)
+        await self.backup_table(self.meet_records)
+        await self.backup_table(self.meet_photo_links)
+        await self.backup_table(self.gym_records)
+        await self.backup_table(self.gym_photo_links)
+        await self.backup_table(self.working_passcodes)
+
+    def format_line(self, obj, indexes):
+        lst = []
+        st = 0
+        for i in range(len(obj)):
+            x = obj.find(",", st)
+            st = x + 1
+            if (i in indexes):
+                lst.append(st)
+        ans = []
+        st = 0
+        for i in lst:
+            ans.append(obj[st+1:i-1])
+            st = i
+        ans.append(obj[st+1:len(obj)-2])
+        return ans
+
+    def format_time(self, obj):
+        pre_ls = obj.split(", ")
+        pre_ls[0] = pre_ls[0][18:]
+        pre_ls[6] = pre_ls[6][:6]
+
+        pre_str = ",".join(pre_ls)
+        data = datetime.datetime.strptime(pre_str, "%Y,%m,%d,%H,%M,%S,%f")
+        return data
+
+    def format_date(self, obj):
+        pre_ls = obj.split(", ")
+        pre_ls[0] = pre_ls[0][14:]
+        pre_ls[2] = pre_ls[2][:2]
+
+        pre_str = ",".join(pre_ls)
+        data = datetime.datetime.strptime(pre_str, "%Y,%m,%d")
+        return data
+
+    async def read_from_file_records(self, filename, name_table):
+        '''
+        for wash - [0, 7, 14, 15]
+        for meet - [0, 7, 14, 15]
+        for gym - [0, 7, 14]
+        for users - [0, 1, 2, 3, 4, 5, 6]
+        '''
+
+        LINKS = [self.gym_photo_links, self.meet_photo_links, self.wash_photo_links]
+
+        f = open(filename, 'r')
+        if name_table == self.wash_records:
+            for line in f:
+                lst = self.format_line(line, WASH)
+                lst[1] = self.format_time(lst[1])
+                lst[2] = self.format_time(lst[2])
+                lst[3] = int(lst[3])
+                lst[4] = int(lst[4])
+                await self.add_record(self.wash_records, lst[1], lst[2], lst[4], lst[3])
+        elif name_table == self.meet_records:
+            for line in f:
+                lst = self.format_line(line, MEET)
+                lst[1] = self.format_time(lst[1])
+                lst[2] = self.format_time(lst[2])
+                lst[3] = int(lst[3])
+                await self.add_record(self.meet_records, *lst[1:4])
+        elif name_table == self.gym_records:
+            for line in f:
+                lst = self.format_line(line, GYM)
+                lst[1] = self.format_time(lst[1])
+                lst[2] = self.format_time(lst[2])
+                lst[3] = int(lst[3])
+                await self.add_record(self.gym_records, *lst[1:])
+        elif name_table == self.users:
+            for line in f:
+                lst = self.format_line(line, USERS)
+                lst[1] = str(lst[1])[1:-1]
+                lst[2] = int(lst[2])
+                lst[3] = float(lst[3])
+                lst[4] = str(lst[4])[1:8]
+                await self.add_user(*lst[1:-1])
+        elif name_table in LINKS:
+            for line in f:
+                lst = self.format_line(line, LINK)
+                lst[1] = str(lst[1])[1:-1]
+                lst[2] = self.format_date(lst[2])
+                await self.update_link(name_table, *lst[1:])
+        elif name_table == self.working_passcodes:
+            for line in f:
+                lst = self.format_line(line, PASSCODE)
+                lst[1] = str(lst[1])[1:-1]
+                lst[2] = self.format_date(lst[2])
+                await self.update_passcode(*lst[1:])
+        else:
+            print("Wrong name of table")
+        f.close()
+
+
+# DB.if_not_exist(password, server_name) - only if you launch first time(create server)
+
+async def main():
+    DB = Database()
+    await DB.create_eng('aSmap051', 'bot_test')
+    await DB.create_tables()
+    #await DB.delete_inactive()
+    await DB.read_from_file_records("working_passcodes_backup_2022-04-22.txt", DB.working_passcodes)
+    await DB.engine.dispose()
+
+if __name__ == '__main__':
+    asyncio.run(main())
 
-    def change_fullname(self, tg_id, new_fullname):
-        conn = self.engine.connect()
 
-        s = update(self.users).where(self.users.c.tg_id == tg_id).values(fullname = new_fullname)
-        rs = conn.execute(s)
-
-    def register_user(self, tg_id):
-        conn = self.engine.connect()
-
-        s = update(self.users).where(self.users.c.tg_id == tg_id).values(is_registered = True)
-        rs = conn.execute(s)
-
-    def add_wash_record(self, begin, end, washer, user_tg_id): #improve
-        conn = self.engine.connect()
-
-        ins = insert(self.wash_records)
-        r = conn.execute(ins,
-                         begin = begin,
-                         finish = end,
-                         washer = washer,
-                         user_tg_id = user_tg_id)
-
-    def add_gym_record(self, begin, end, user_tg_id): #improve
-        conn = self.engine.connect()
-
-        ins = insert(self.gym_records)
-        r = conn.execute(ins,
-                         begin = begin,
-                         finish = end,
-                         user_tg_id = user_tg_id)
-
-    def add_meet_record(self, begin, end, user_tg_id): #improve
-        conn = self.engine.connect()
-
-        ins = insert(self.meet_records)
-        r = conn.execute(ins,
-                         begin = begin,
-                         finish = end,
-                         user_tg_id = user_tg_id)
-
-    def approve_meet_record(self, record_id):
-        conn = self.engine.connect()
-
-        s = update(self.meet_records).where(self.meet_records.c.id == record_id).values(is_approved = True)
-        r = conn.execute(s)
-
-    def count_gym_records(self, beg, end):
-        conn = self.engine.connect()
-
-        s = select(func.count(distinct(self.gym_records.c.id))).where(and_(self.gym_records.c.begin >= beg,
-                                                                   self.gym_records.c.finish <= end))
-        rs = conn.execute(s).scalar()
-        #print(rs)
-        return rs
-    def count_wash_records(self, beg, end):
-        conn = self.engine.connect()
-
-        s = select(func.count(distinct(self.wash_records.c.id))).where(or_(self.wash_records.c.begin.between(beg, end),
-                                                              self.wash_records.c.finish.between(beg, end)))
-        rs = conn.execute(s).scalar()
-        #print(rs)
-        return rs
-
-    def count_meet_records(self, beg, end):
-        conn = self.engine.connect()
-
-        s = select(func.count(distinct(self.meet_records.c.id))).where(or_(self.meet_records.c.begin.between(beg, end),
-                                                              self.meet_records.c.finish.between(beg, end)))
-        rs = conn.execute(s).scalar()
-        #print(rs)
-        return rs
-
-    def delete_inactive(self):
-        conn = self.engine.connect()
-
-        s = delete(self.users).where(self.users.c.is_registered == False)
-        rs = conn.execute(s)
-
-    def delete_by_time(self, name_table, date, delta):#delta MUST be timedelta(if u bydlo and don't understand)
-        conn = self.engine.connect()
-
-        s = delete(name_table).where((date - name_table.c.begin) >= delta)
-        rs = conn.execute(s)
-
-    def get_wash_records(self, day):#improve
-        day_start = day
-        day_end = day_start + datetime.timedelta(days=1)
-
-        conn = self.engine.connect()
-
-        s = select([self.wash_records]).where(and_(self.wash_records.c.begin >= day_start,
-                                                   self.wash_records.c.finish <= day_end))
-        rs = conn.execute(s).fetchall()
-        return rs
-
-    def get_gym_records(self, day):
-        day_start = day
-        day_end = day_start + datetime.timedelta(days=1)
-
-        conn = self.engine.connect()
-
-        s = select([self.gym_records]).where(and_(self.gym_records.c.begin >= day_start,
-                                                   self.gym_records.c.finish <= day_end))
-        rs = conn.execute(s).fetchall()
-        return rs
-
-    def get_meet_records(self, day):
-        day_start = day
-        day_end = day_start + datetime.timedelta(days=1)
-
-        conn = self.engine.connect()
-
-        s = select([self.meet_records]).where(and_(self.meet_records.c.begin >= day_start,
-                                                   self.meet_records.c.finish <= day_end))
-        rs = conn.execute(s).fetchall()
-        return rs
-
-    def get_user_wash_records(self, tg_id, start, end):
-        conn = self.engine.connect()
-
-        s = select([self.wash_records]).where(and_(self.wash_records.c.begin >= start,
-                                                   self.wash_records.c.finish <= end,
-                                                   self.wash_records.c.user_tg_id == tg_id))
-
-        rs = conn.execute(s).fetchall()
-        return rs
-
-    def get_user_gym_records(self, tg_id, start, end):
-        conn = self.engine.connect()
-
-        s = select([self.wash_records]).where(and_(self.gym_records.c.begin >= start,
-                                                   self.gym_records.c.finish <= end,
-                                                   self.gym_records.c.user_tg_id == tg_id))
-        rs = conn.execute(s).fetchall()
-        return rs
-
-    def get_user_meet_records(self, tg_id, start, end):
-        conn = self.engine.connect()
-
-        s = select([self.meet_records]).where(and_(self.meet_records.c.begin >= start,
-                                                   self.meet_records.c.finish <= end,
-                                                   self.meet_records.c.user_tg_id == tg_id))
-        rs = conn.execute(s).fetchall()
-        return rs
-
-    def get_wash_record_id(self, record_id):
-        conn = self.engine.connect()
-
-        s = select([self.wash_records]).where(self.wash_records.c.id == record_id)
-
-        rs = conn.execute(s).fetchall()
-        return rs
-
-    def get_gym_record_id(self, record_id):
-        conn = self.engine.connect()
-
-        s = select([self.gym_records]).where(self.gym_records.c.id == record_id)
-
-        rs = conn.execute(s).fetchall()
-        return rs
-
-    def get_meet_record_id(self, record_id):
-        conn = self.engine.connect()
-
-        s = select([self.meet_records]).where(self.meet_records.c.id == record_id)
-
-        rs = conn.execute(s).fetchall()
-        return rs
-
-    def delete_wash_record(self, record_id):
-        conn = self.engine.connect()
-
-        s = delete(self.wash_records).where(self.wash_records.c.id == record_id)
-        rs = conn.execute(s)
-
-    def delete_gym_record(self, record_id):
-        conn = self.engine.connect()
-
-        s = delete(self.gym_records).where(self.gym_records.c.id == record_id)
-        rs = conn.execute(s)
-
-    def delete_meet_record(self, record_id):
-        conn = self.engine.connect()
-
-        s = delete(self.meet_records).where(self.meet_records.c.id == record_id)
-        rs = conn.execute(s)
-
-    def update_link(self, name_table, links, days):
-        conn = self.engine.connect()
-
-        ins = insert(name_table)
-        r = conn.execute(ins,
-                         link=links,
-                         day=days)
-
-    def get_link(self, name_table, days):
-        conn = self.engine.connect()
-
-        s = select([name_table]).where(name_table.c.day == days)
-
-        rs = conn.execute(s).fetchall()
-        return rs
-
-    def delete_link(self, name_table, days):
-        conn = self.engine.connect()
-
-        s = delete(name_table).where(name_table.c.day == days)
-        rs = conn.execute(s)
-
-    def update_passcode(self, code, days):
-        conn = self.engine.connect()
-
-        ins = insert(self.working_passcodes)
-        r = conn.execute(ins,
-                         passcode=code,
-                         day=days)
-
-    def get_passcode(self, days):
-        conn = self.engine.connect()
-
-        s = select([self.working_passcodes]).where(self.working_passcodes.c.day == days)
-
-        rs = conn.execute(s).fetchall()
-        return rs
-
-#DB = Database() - create object
-#DB.if_not_exist(password, server_name) - only if you launch first time(create server)
-#DB.create_eng('password', 'server_name') - create engine
-#DB.create_tables()
