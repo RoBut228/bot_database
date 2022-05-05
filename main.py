@@ -303,9 +303,11 @@ class Database:
         await self.connection(delete(self.working_passcodes).where(self.working_passcodes.c.day <= days))
 
     async def change_fields(self, name_table, changes_d, number):
+
         await self.connection(update(name_table).where(name_table.c.id == number).values(changes_d))
 
     def list_columns(self, name_table):
+
         res = []
         for c in name_table.c:
             res.append(c.name)
@@ -415,8 +417,13 @@ class Database:
 
     async def show(self, name_table):
 
-        data = await self.connection(select(name_table))
+        data = await self.connection(select(name_table).order_by(name_table.c.id))
         print(data.fetchall())
+
+    async def show_num(self, name_table, edge):
+
+        res = await self.connection(select(name_table).order_by(name_table.c.id).offset(edge))
+        print(res.fetchall())
 
 
 # DB.if_not_exist(password, server_name) - only if you launch first time(create server)
@@ -426,7 +433,8 @@ async def main():
     DB = Database()
     await DB.create_eng('aSmap051', 'bot_test')
     await DB.create_tables()
-    await DB.backup_all(r"C:\Users\Roman\Desktop")
+    #await DB.backup_all(r"C:\Users\Roman\Desktop")
+    await DB.show_num(DB.users, 1)
     #res = DB.list_columns(DB.users)
     #print(res)
     #await DB.change_fields(DB.users, {"tg_id" : 9988, "username" : "abobus"}, 1)
